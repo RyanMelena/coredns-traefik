@@ -1,0 +1,37 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits"
+  ],
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "description": "CoreDNS is pinned as a build arg rather than a base image, so point Renovate at the GitHub release tags. A bump here rebuilds the plugin against a new CoreDNS; the plugin tests are what catch an API change.",
+      "matchDatasources": ["github-releases"],
+      "matchPackageNames": ["coredns/coredns"],
+      "groupName": "coredns"
+    },
+    {
+      "description": "Go module updates for the plugin itself. These are all CoreDNS's own dependencies, so let them batch.",
+      "matchManagers": ["gomod"],
+      "groupName": "go modules"
+    },
+    {
+      "description": "Never open a PR that unpins an image tag.",
+      "matchUpdateTypes": ["pinDigest"],
+      "enabled": true
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "The COREDNS_VERSION build arg in the Dockerfile",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG COREDNS_VERSION=(?<currentValue>v[^\\s]+)"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "coredns/coredns",
+      "extractVersionTemplate": "^(?<version>v.+)$"
+    }
+  ]
+}

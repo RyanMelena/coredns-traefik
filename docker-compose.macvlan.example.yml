@@ -1,0 +1,90 @@
+# Example deployment on a macvlan network. Copy, set the values marked CONFIRM,
+# and run. For the ordinary bridge-networking case see
+# docker-compose.example.yml - that is the simpler starting point.
+#
+# On macvlan the container holds its own address on the VLAN, so there is no
+# publish step and no remapping: the container's ports are the ports clients
+# reach. There is no ports: section here at all; DNS_PORT and METRICS_PORT are
+# set directly to what the network expects.
+
+services:
+  traefik-dns:
+    # Pinned by digest-bearing tag; :latest is a defect, not a convenience.
+    image: ghcr.io/ryanmelena/coredns-traefik:1.0.0
+    restart: unless-stopped
+
+    environment:
+      # CONFIRM: the internal zone this container is authoritative for.
+      DNS_ZONE: "internal.example.com"
+
+      # CONFIRM: the Traefik routers endpoint, reachable from this container.
+      # Must not be behind forward-auth for GET - an auth redirect returns HTML
+      # and every poll will fail. Verify before deploying:
+      #   curl -fsS http://<traefik>:8080/api/http/routers | head
+      TRAEFIK_API: "http://10.0.0.11:8080/api/http/routers"
+
+      # CONFIRM: the address every discovered name resolves to - the Traefik
+      # internal listener, NOT the Traefik API host if they differ.
+      TARGET_IP: "10.0.0.10"
+
+      # Clients expect 53 and there is no mapping to hide behind, so bind it
+      # directly. This needs no capabilities under Docker, which sets
+      # net.ipv4.ip_unprivileged_port_start=0 inside containers. On a runtime
+      # that keeps the kernel default of 1024, a port below 1024 would
+      # additionally need cap_add: [NET_BIND_SERVICE].
+      DNS_PORT: "53"
+
+      # Now exposed on the VLAN rather than only inside Docker - firewall it,
+      # or move it to a port you filter.
+      METRICS_PORT: "9153"
+
+      POLL_INTERVAL: "30s"
+      RECORD_TTL: "60"
+      API_TIMEOUT: "5s"
+
+    networks:
+      services:
+        # CONFIRM: the container's own address on the VLAN. This is the IP your
+        # upstream resolver forwards the zone to.
+        ipv4_address: 10.0.0.20
+
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+
+    # The image is distroless, so there is no shell and no curl to probe with;
+    # this proves the binary is intact but not that the zone is being served.
+    # There is deliberately no /health or /ready endpoint either - nothing in
+    # the resolution path polls one, and neither would catch the failure that
+    # matters. For that, scrape http://10.0.0.20:9153/metrics and alert on
+    # coredns_traefik_records == 0 or a stale
+    # coredns_traefik_last_success_timestamp_seconds. Note that a macvlan
+    # container is unreachable from its own Docker host by design - traffic
+    # never crosses the parent interface back - so scrape it from elsewhere.
+    healthcheck:
+      test: ["CMD", "/coredns", "-version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  services:
+    driver: macvlan
+    driver_opts:
+      # CONFIRM: host interface for this VLAN, e.g. eth0 or a subinterface
+      # like eth0.35.
+      parent: eth0
+    ipam:
+      config:
+        # CONFIRM: the VLAN's subnet and gateway. Keep the container's address
+        # above outside your DHCP pool.
+        - subnet: 10.0.0.0/24
+          gateway: 10.0.0.1

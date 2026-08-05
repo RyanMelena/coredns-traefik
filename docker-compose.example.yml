@@ -1,0 +1,74 @@
+# Example deployment on a bridge network. Copy, set the four values marked
+# CONFIRM, and run. For a container with its own address on the VLAN see
+# docker-compose.macvlan.example.yml.
+#
+# No volumes, no docker.sock, no capabilities. Every knob is an environment
+# variable and all state is in memory.
+
+services:
+  traefik-dns:
+    # Pinned by digest-bearing tag; :latest is a defect, not a convenience.
+    image: ghcr.io/ryanmelena/coredns-traefik:1.0.0
+    restart: unless-stopped
+
+    environment:
+      # CONFIRM: the internal zone this container is authoritative for.
+      DNS_ZONE: "internal.example.com"
+
+      # CONFIRM: the Traefik routers endpoint, reachable from this container.
+      # Must not be behind forward-auth for GET - an auth redirect returns HTML
+      # and every poll will fail. Verify before deploying:
+      #   curl -fsS http://<traefik>:8080/api/http/routers | head
+      TRAEFIK_API: "http://10.0.0.11:8080/api/http/routers"
+
+      # CONFIRM: the address every discovered name resolves to - the Traefik
+      # internal listener, NOT the Traefik API host if they differ.
+      TARGET_IP: "10.0.0.10"
+
+      # Listening ports inside the container. Under bridge networking these can
+      # stay as they are and the ports: section below does the remapping.
+      DNS_PORT: "5353"
+      METRICS_PORT: "9153"
+
+      POLL_INTERVAL: "30s"
+      RECORD_TTL: "60"
+      API_TIMEOUT: "5s"
+
+    ports:
+      # CONFIRM: the host IP to bind on. The host's 53 maps onto the container's
+      # DNS_PORT.
+      - "10.0.0.20:53:5353/udp"
+      - "10.0.0.20:53:5353/tcp"
+      # Prometheus metrics. Bind to a host IP rather than 0.0.0.0 if this
+      # network is not trusted; drop the line to keep them container-internal.
+      - "10.0.0.20:9153:9153/tcp"
+
+    # Nothing is needed: it writes no files, and Docker sets
+    # net.ipv4.ip_unprivileged_port_start=0 inside containers, so this holds
+    # even if you set DNS_PORT to 53 and publish it directly. On a runtime that
+    # keeps the kernel default of 1024, DNS_PORT below 1024 would additionally
+    # need cap_add: [NET_BIND_SERVICE].
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+
+    # The image is distroless, so there is no shell and no curl to probe with;
+    # this proves the binary is intact but not that the zone is being served.
+    # There is deliberately no /health or /ready endpoint either - nothing in
+    # the resolution path polls one, and neither would catch the failure that
+    # matters. For that, scrape http://<host>:9153/metrics and alert on
+    # coredns_traefik_records == 0 or a stale
+    # coredns_traefik_last_success_timestamp_seconds.
+    healthcheck:
+      test: ["CMD", "/coredns", "-version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

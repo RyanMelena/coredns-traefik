@@ -1,0 +1,41 @@
+# Every knob is an environment variable. CoreDNS substitutes {$VAR} as a single
+# token before parsing, so an unset variable becomes a missing argument and the
+# server refuses to start rather than coming up misconfigured.
+#
+# Every listening port is parameterized. Under bridge networking these can be
+# left alone and remapped when publishing, but on macvlan or ipvlan the
+# container owns its own address and there is no publish step, so the ports
+# below are the ports on the network.
+#
+# DNS_PORT defaults to 5353, with the host mapping 53 onto it. Docker sets
+# net.ipv4.ip_unprivileged_port_start=0 inside containers, so DNS_PORT=53 also
+# works there with cap_drop: ALL and no capabilities. Runtimes that keep the
+# kernel default of 1024 need cap_add: NET_BIND_SERVICE or that sysctl to bind
+# below 1024, which is why 5353 is the default rather than 53.
+{$DNS_ZONE}:{$DNS_PORT} {
+    traefik {
+        api      {$TRAEFIK_API}
+        target   {$TARGET_IP}
+        interval {$POLL_INTERVAL}
+        ttl      {$RECORD_TTL}
+        timeout  {$API_TIMEOUT}
+    }
+
+    # Deliberately NO forward or upstream. An in-zone miss must return NXDOMAIN:
+    # forwarding it would send the query back to the resolver in front of this
+    # container, which forwards the zone here, which is a resolution loop.
+
+    # No health or ready endpoint: nothing here can consume one. Unbound and
+    # dnsmasq forward by static config, there is no orchestrator, and the
+    # distroless image has no shell for a healthcheck to curl with. Cold-start
+    # correctness does not depend on ready either - the plugin serves SERVFAIL
+    # until the first poll succeeds whether or not anything is watching. The
+    # plugin still implements the ready interface, so a Corefile of your own can
+    # enable it.
+    #
+    # Metrics stay, because a stale or empty zone is this design's real failure
+    # mode and it looks identical to healthy from the outside.
+    prometheus :{$METRICS_PORT}
+    log
+    errors
+}

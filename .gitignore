@@ -1,0 +1,5 @@
+/.claude
+/coredns
+*.test
+*.out
+CLAUDE.md
