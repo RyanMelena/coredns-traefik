@@ -63,6 +63,38 @@ func TestExtractHosts(t *testing.T) {
 			want: []string{"a.example.com"},
 		},
 		{
+			// Traefik registers every matcher under its lower, upper and title
+			// case spellings, so these are all live router rules.
+			name: "uppercase matcher name",
+			rule: "HOST(`a.example.com`)",
+			want: []string{"a.example.com"},
+		},
+		{
+			name: "lowercase matcher name",
+			rule: "host(`a.example.com`)",
+			want: []string{"a.example.com"},
+		},
+		{
+			name: "mixed case alongside canonical spelling",
+			rule: "Host(`a.example.com`) || HOST(`b.example.com`)",
+			want: []string{"a.example.com", "b.example.com"},
+		},
+		{
+			name: "negated uppercase host is excluded",
+			rule: "!HOST(`blocked.example.com`)",
+			want: nil,
+		},
+		{
+			name: "uppercase HostRegexp is still not a Host",
+			rule: "HOSTREGEXP(`^.+\\.example\\.com$`)",
+			want: nil,
+		},
+		{
+			name: "uppercase HostSNI is still not a Host",
+			rule: "HOSTSNI(`a.example.com`)",
+			want: nil,
+		},
+		{
 			name: "HostRegexp is not a Host",
 			rule: "HostRegexp(`^.+\\.example\\.com$`)",
 			want: nil,
@@ -313,6 +345,12 @@ func TestHostsInZonesRealWorldRules(t *testing.T) {
 			// Traefik's own internal API router.
 			rule: "PathPrefix(`/api`)",
 			want: nil,
+		},
+		{
+			// A label typo Traefik accepts: matcher names are case-insensitive
+			// there, so both names must resolve.
+			rule: "Host(`homepage.internal.example.com`) || HOST(`home.internal.example.com`)",
+			want: []string{"homepage.internal.example.com.", "home.internal.example.com."},
 		},
 		{
 			// A public router that must not leak into the internal zone.

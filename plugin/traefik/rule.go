@@ -7,7 +7,10 @@ import (
 	"github.com/miekg/dns"
 )
 
-// hostMatcher is the only Traefik matcher we can enumerate names from.
+// hostMatcher is the only Traefik matcher we can enumerate names from. It is
+// compared case-insensitively: Traefik's rule parser registers every matcher
+// under its original, lower, upper and title case spellings, so `HOST(...)` is
+// a working router rule and must produce a record like `Host(...)` does.
 //
 // HostRegexp is deliberately ignored: a regexp cannot be expanded into a finite
 // set of names, and guessing would reintroduce the wildcard behaviour this
@@ -40,7 +43,7 @@ func extractHosts(rule string) []string {
 		case isIdentByte(c):
 			name, next := readIdent(rule, i)
 			open := skipSpace(rule, next)
-			if open == len(rule) || rule[open] != '(' || name != hostMatcher || negated(rule, i) {
+			if open == len(rule) || rule[open] != '(' || !strings.EqualFold(name, hostMatcher) || negated(rule, i) {
 				// Not a call, not Host, or a negated Host (which excludes names
 				// rather than defining them). Advance past the identifier only:
 				// the argument list is then scanned normally, so nested calls
