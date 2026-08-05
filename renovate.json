@@ -24,6 +24,12 @@
       "enabled": true
     },
     {
+      "description": "CoreDNS v1.14.x builds against caddy v1, and a Go major bump changes the import path rather than just the requirement, so a v2 PR fails the build and cannot be merged until upstream CoreDNS moves. Follow CoreDNS's choice instead of Renovate's.",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["github.com/coredns/caddy"],
+      "allowedVersions": "<2.0.0"
+    },
+    {
       "description": "Never open a PR that unpins an image tag.",
       "matchUpdateTypes": ["pinDigest"],
       "enabled": true
