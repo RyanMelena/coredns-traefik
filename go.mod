@@ -3,7 +3,7 @@ module github.com/RyanMelena/coredns-traefik
 go 1.25.0
 
 require (
-	github.com/coredns/caddy v1.1.4-0.20250930002214-15135a999495
+	github.com/coredns/caddy/v2 v2.1.1
 	github.com/coredns/coredns v1.14.6
 	github.com/miekg/dns v1.1.72
 	github.com/prometheus/client_golang v1.23.2
