@@ -18,6 +18,12 @@
       "groupName": "go modules"
     },
     {
+      "description": "Renovate leaves indirect Go dependencies alone by default, which is wrong here: this module imports almost nothing directly, so every dependency that ends up in the shipped binary is indirect. The image build merges this go.mod into CoreDNS's, and the higher version wins, so an indirect bump here is the only way to patch a CoreDNS dependency ahead of a CoreDNS release.",
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["indirect"],
+      "enabled": true
+    },
+    {
       "description": "Never open a PR that unpins an image tag.",
       "matchUpdateTypes": ["pinDigest"],
       "enabled": true
