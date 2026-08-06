@@ -25,11 +25,12 @@ disk and nothing to mount.
 
 ~~~
 traefik {
-    api      URL
-    target   IP
-    interval DURATION
-    ttl      SECONDS
-    timeout  DURATION
+    api        URL
+    target     IP
+    interval   DURATION
+    ttl        SECONDS
+    timeout    DURATION
+    nameserver IP...
 }
 ~~~
 
@@ -42,6 +43,11 @@ traefik {
 * `ttl` **SECONDS** on the answers, and the negative caching TTL of the SOA.
   Default `60`, maximum `604800`.
 * `timeout` **DURATION** for one HTTP request to the API. Default `5s`.
+* `nameserver` **IP...** — the addresses published for the zone's nameserver
+  name, `ns.dns.<zone>`. Defaults to this host's own routable IPv4 addresses.
+  Set it when the server is attached to several networks and only some of them
+  face its clients: every detected address is published, and one a client cannot
+  route to costs it a timeout before it tries the next.
 
 Every value is validated when the Corefile is parsed. A missing or malformed
 one aborts startup rather than producing a server that answers authoritatively
@@ -78,6 +84,8 @@ router that failed to load does not resolve.
 | Any other type for a known name | NOERROR, empty answer, SOA in authority (NODATA) |
 | Any type for an unknown name in zone | NXDOMAIN, authoritative, SOA in authority |
 | `SOA` at the zone apex | The synthesized SOA |
+| `NS` at the zone apex | The synthesized NS, with the nameserver address as glue |
+| `A` for `ns.dns.<zone>` | This server's own address(es) |
 | Anything out of zone | Passed to the next plugin |
 | Any in-zone query before the first successful poll | SERVFAIL |
 
@@ -89,10 +97,31 @@ The SERVFAIL on cold start is deliberate. Until the first poll succeeds the
 plugin does not know what the zone contains, and an NXDOMAIN would be cached by
 the resolvers above it and outlive the outage.
 
+## Zone apex
+
 The apex SOA is synthesized (`ns.dns.<zone>` / `hostmaster.<zone>`) with a serial
-taken from the last successful poll. No NS records are served: the zone is
-reached by a forwarding stanza on the resolver in front of it, not by
-delegation.
+taken from the last successful poll, and the apex carries a matching NS RRset
+naming `ns.dns.<zone>`. That name resolves to this server's own addresses, and
+does so without any router claiming it — it is zone infrastructure, not a routed
+service. If a router does claim it, the infrastructure answer still wins, since
+pointing the zone's NS at the Traefik listener would name a host that does not
+serve DNS.
+
+Nothing delegates to this server: the zone is reached by a forwarding stanza on
+the resolver in front of it. The NS RRset exists anyway because a zone without
+one is malformed, and because clients that do zone-cut discovery — ask `SOA`,
+then `NS`, then resolve the nameserver name — get stranded at the second step
+without it. `go-acme/lego`, which Traefik uses for ACME DNS-01, is one such
+client, and reports `could not determine authoritative nameservers`.
+
+Note what that does *not* fix. lego walks up the labels looking for the first
+name that answers `SOA` in the answer section, using the resolvers its own
+container is configured with. If those resolvers see this zone, lego stops at
+this zone — so the challenge TXT it then looks for is one this plugin has no way
+to serve, and the propagation check never passes. A split-horizon deployment
+should point lego at public resolvers instead
+(`--certificatesresolvers.<name>.acme.dnschallenge.resolvers`), which is a
+change where the ACME client runs, not here.
 
 ## Poll failures
 

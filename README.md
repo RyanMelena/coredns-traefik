@@ -61,6 +61,7 @@ if the container should hold its own address on the VLAN.
 | `POLL_INTERVAL` | no | `30s` | Time between polls |
 | `RECORD_TTL` | no | `60` | Answer TTL, and the negative caching TTL |
 | `API_TIMEOUT` | no | `5s` | Per-request HTTP timeout |
+| `NS_IP` | no | detected | Address published for `ns.dns.<zone>`; set it when the container is on more than one network |
 
 The three required variables have no defaults on purpose. Unset, they substitute
 to nothing and the container refuses to start — a DNS server that comes up
@@ -81,6 +82,15 @@ matter operationally:
   answer there would be cached upstream and outlive the outage.
 - **AAAA on a known name is NODATA,** not NXDOMAIN — the name exists, the type
   does not.
+- **The apex carries SOA and NS,** and the nameserver name `ns.dns.<zone>`
+  resolves to the container itself. Nothing delegates to this server, but a
+  client that discovers zones by asking SOA, then NS, then resolving the
+  nameserver name needs all three to be there. `go-acme/lego` is one, and
+  reports `could not determine authoritative nameservers` when they are not.
+  Note that this does not make an ACME DNS-01 client work against a split
+  horizon: point it at public resolvers
+  (`--certificatesresolvers.<name>.acme.dnschallenge.resolvers` in Traefik) so
+  its zone walk finds the public zone rather than this one.
 
 ## Ports
 
@@ -181,8 +191,10 @@ image whose plugin did not link.
 
 [`test/integration.sh`](test/integration.sh) runs the acceptance criteria
 against a stubbed Traefik API: resolution, NXDOMAIN with SOA, NODATA on AAAA,
-discovery and removal within a poll interval, record retention across an API
-outage, cold-start SERVFAIL, and refusal to start when misconfigured.
+the apex zone cut (SOA, NS, and a nameserver name that resolves to a server
+which answers), discovery and removal within a poll interval, record retention
+across an API outage, cold-start SERVFAIL, and refusal to start when
+misconfigured.
 
 ## Maintenance
 

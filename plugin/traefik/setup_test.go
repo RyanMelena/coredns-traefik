@@ -1,6 +1,7 @@
 package traefik
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -332,6 +333,67 @@ func TestParse(t *testing.T) {
 			}
 			if got.cfg.timeout != tc.wantTimeout {
 				t.Errorf("timeout = %s, want %s", got.cfg.timeout, tc.wantTimeout)
+			}
+		})
+	}
+}
+
+// nameserver is the only option that may arrive with no value, because the
+// shipped Corefile passes an environment variable that is usually unset and
+// "unset" means "detect the addresses" rather than "misconfigured".
+func TestParseNameserver(t *testing.T) {
+	tests := []struct {
+		name    string
+		option  string
+		want    []string
+		wantErr string
+	}{
+		{name: "absent, addresses are detected", option: "", want: nil},
+		{name: "unset environment variable", option: "nameserver", want: nil},
+		{name: "unset environment variable as an empty token", option: `nameserver ""`, want: nil},
+		{name: "one address", option: "nameserver 10.0.0.20", want: []string{"10.0.0.20"}},
+		{
+			name:   "several addresses for a multi-homed server",
+			option: "nameserver 10.0.0.20 192.168.1.20",
+			want:   []string{"10.0.0.20", "192.168.1.20"},
+		},
+		{name: "not an address", option: "nameserver localhost", wantErr: "is not an IP address"},
+		{name: "IPv6 is refused", option: "nameserver 2001:db8::1", wantErr: "only A records are served"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := caddy.NewTestController("dns", `traefik {
+				api    http://t/api/http/routers
+				target 10.0.0.2
+				`+tc.option+`
+			}`)
+			c.ServerBlockKeys = []string{"internal.example.com."}
+
+			got, err := parse(c)
+
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			var addrs []string
+			for _, ip := range got.cfg.nameservers {
+				addrs = append(addrs, ip.String())
+			}
+			if !reflect.DeepEqual(addrs, tc.want) {
+				t.Errorf("nameservers = %v, want %v", addrs, tc.want)
+			}
+
+			// Configured or detected, the handler always ends up with something
+			// to answer the nameserver name with, or a warning saying it does not.
+			if len(tc.want) > 0 && len(got.nsIPs) != len(tc.want) {
+				t.Errorf("handler nsIPs = %v, want the configured %v", got.nsIPs, tc.want)
 			}
 		})
 	}

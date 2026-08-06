@@ -24,12 +24,13 @@ DNS="cdt-dns-$$"
 COLD="cdt-cold-$$"
 PORTED="cdt-port-$$"
 LOWPORT="cdt-low-$$"
+NSIP="cdt-nsip-$$"
 HELPER="alpine:3.22"
 
 failures=0
 
 cleanup() {
-  docker rm -f "$DNS" "$COLD" "$PORTED" "$LOWPORT" "$STUB" >/dev/null 2>&1 || true
+  docker rm -f "$DNS" "$COLD" "$PORTED" "$LOWPORT" "$NSIP" "$STUB" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -161,6 +162,37 @@ check "AAAA on a known name has an empty answer" \
   "0" "$(dig_in_net "$DNS" "app.$ZONE" AAAA +noall +comments | sed -n 's/.*ANSWER: \([0-9]*\).*/\1/p')"
 check "SOA is answered at the apex" \
   "yes" "$(contains "SOA" "$(dig_in_net "$DNS" "$ZONE" SOA +noall +answer)")"
+
+echo
+echo "Zone cut"
+# A client doing delegation discovery asks SOA, then NS, then resolves the
+# nameserver name. All three have to work or it gives up at whichever step
+# comes back empty - which is what go-acme/lego reports as "could not
+# determine authoritative nameservers".
+check "NS is answered at the apex" \
+  "yes" "$(contains "NS" "$(dig_in_net "$DNS" "$ZONE" NS +noall +answer)")"
+check "the NS names ns.dns.<zone>" \
+  "ns.dns.$ZONE." "$(dig_in_net "$DNS" "$ZONE" NS +short)"
+check "the NS name resolves" \
+  "yes" "$(contains "." "$(dig_in_net "$DNS" "ns.dns.$ZONE" +short)")"
+check "the NS name does not resolve to the Traefik target" \
+  "no" "$(contains "$TARGET" "$(dig_in_net "$DNS" "ns.dns.$ZONE" +short)")"
+check "the NS answer carries glue" \
+  "yes" "$(contains "ns.dns.$ZONE." "$(dig_in_net "$DNS" "$ZONE" NS +noall +additional)")"
+check "the SOA MNAME matches the NS" \
+  "ns.dns.$ZONE." "$(dig_in_net "$DNS" "$ZONE" SOA +short | awk '{print $1}')"
+check "the NS name is reachable at the address it publishes" \
+  "$TARGET" "$(dig_in_net "$(dig_in_net "$DNS" "ns.dns.$ZONE" +short | head -1)" "app.$ZONE" +short)"
+
+# Detection publishes every address the container has, which is wrong when only
+# one network faces the clients. NS_IP is the way out of that.
+docker run -d --name "$NSIP" --network "$NET" --cap-drop ALL --read-only \
+  -e DNS_ZONE="$ZONE" -e TRAEFIK_API="http://$STUB:8080/api/http/routers" \
+  -e TARGET_IP="$TARGET" -e POLL_INTERVAL=2s -e RECORD_TTL=60 \
+  -e NS_IP="10.99.99.99" "$IMAGE" >/dev/null
+sleep 6
+check "NS_IP overrides the detected address" \
+  "10.99.99.99" "$(dig_in_net "$NSIP" "ns.dns.$ZONE" +short)"
 
 echo
 echo "Cold start with the API unreachable"

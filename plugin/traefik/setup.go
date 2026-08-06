@@ -78,6 +78,18 @@ func parse(c *caddy.Controller) (*Traefik, error) {
 
 		for c.NextBlock() {
 			option := c.Val()
+
+			// nameserver is the one option that is allowed to arrive with no
+			// value: unset, it means "detect this host's addresses", which is
+			// what the shipped Corefile relies on.
+			if option == "nameserver" {
+				var err error
+				if cfg.nameservers, err = parseNameservers(c.RemainingArgs()); err != nil {
+					return nil, c.Errf("%s: %v", option, err)
+				}
+				continue
+			}
+
 			value, err := singleArg(c)
 			if err != nil {
 				return nil, err
@@ -168,6 +180,30 @@ func parseTarget(v string) (net.IP, error) {
 		return nil, fmt.Errorf("%q is IPv6, but only A records are served", v)
 	}
 	return ip.To4(), nil
+}
+
+// parseNameservers reads the addresses published for the zone's nameserver
+// name. Empty arguments are dropped rather than rejected: an unset environment
+// variable substitutes to nothing, and for this option that is a valid choice -
+// it selects interface detection - not a missing value.
+func parseNameservers(args []string) ([]net.IP, error) {
+	var ips []net.IP
+	for _, a := range args {
+		if a == "" {
+			continue
+		}
+		ip := net.ParseIP(a)
+		if ip == nil {
+			return nil, fmt.Errorf("%q is not an IP address", a)
+		}
+		if ip.To4() == nil {
+			// The NS name is published as an A record only, in keeping with the
+			// rest of the zone.
+			return nil, fmt.Errorf("%q is IPv6, but only A records are served", a)
+		}
+		ips = append(ips, ip.To4())
+	}
+	return ips, nil
 }
 
 func parseInterval(v string) (time.Duration, error) {

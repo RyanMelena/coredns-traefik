@@ -19,6 +19,13 @@
         interval {$POLL_INTERVAL}
         ttl      {$RECORD_TTL}
         timeout  {$API_TIMEOUT}
+
+        # The address published for the zone's nameserver name, which the apex
+        # NS RRset points at. Unset - the usual case - detects this container's
+        # own addresses. Set NS_IP when the container is attached to more than
+        # one network and only one of them faces the clients, otherwise half the
+        # answers name an address they cannot route to.
+        nameserver {$NS_IP}
     }
 
     # Deliberately NO forward or upstream. An in-zone miss must return NXDOMAIN:

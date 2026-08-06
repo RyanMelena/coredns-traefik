@@ -22,6 +22,9 @@ import (
 const (
 	testZone   = "internal.example.com."
 	testTarget = "10.0.0.10"
+	testNSName = "ns.dns.internal.example.com."
+	// The address of the server itself, which is not the Traefik target.
+	testSelf = "10.0.0.20"
 )
 
 // Several tests deliberately drive poll failures and record churn, both of
@@ -33,12 +36,15 @@ func TestMain(m *testing.M) {
 }
 
 func testHandler() *Traefik {
+	// nameservers is pinned rather than detected: the addresses of the machine
+	// running the tests are not a stable fixture.
 	return New([]string{testZone}, config{
-		api:      "http://traefik.invalid/api/http/routers",
-		target:   net.ParseIP(testTarget).To4(),
-		interval: defaultInterval,
-		ttl:      defaultTTL,
-		timeout:  defaultTimeout,
+		api:         "http://traefik.invalid/api/http/routers",
+		target:      net.ParseIP(testTarget).To4(),
+		interval:    defaultInterval,
+		ttl:         defaultTTL,
+		timeout:     defaultTimeout,
+		nameservers: []net.IP{net.ParseIP(testSelf).To4()},
 	})
 }
 
@@ -116,6 +122,30 @@ func TestServeDNS(t *testing.T) {
 			wantRcode:   dns.RcodeSuccess,
 			wantAuthSOA: true,
 		},
+		{
+			// The name the apex NS RRset and the SOA MNAME both point at. It
+			// resolves to this server, not to the Traefik target, and exists
+			// without any router claiming it.
+			name:       "nameserver name resolves to this server",
+			qname:      testNSName,
+			qtype:      dns.TypeA,
+			wantRcode:  dns.RcodeSuccess,
+			wantAnswer: []string{testSelf},
+		},
+		{
+			name:        "nameserver name AAAA is NODATA, not NXDOMAIN",
+			qname:       testNSName,
+			qtype:       dns.TypeAAAA,
+			wantRcode:   dns.RcodeSuccess,
+			wantAuthSOA: true,
+		},
+		{
+			name:        "a name below the nameserver name is still NXDOMAIN",
+			qname:       "sub." + testNSName,
+			qtype:       dns.TypeA,
+			wantRcode:   dns.RcodeNameError,
+			wantAuthSOA: true,
+		},
 	}
 
 	for _, tc := range tests {
@@ -181,6 +211,144 @@ func TestServeDNS(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A zone with an SOA but no NS RRset strands any client that does zone-cut
+// discovery: SOA, then NS, then resolve the NS name. Each of those three steps
+// has to work, and the third one cannot depend on a Traefik router existing.
+func TestServeDNSApexNS(t *testing.T) {
+	h := loaded(testHandler(), "app.internal.example.com.")
+
+	r := new(dns.Msg)
+	r.SetQuestion(testZone, dns.TypeNS)
+	rec := dnstest.NewRecorder(&test.ResponseWriter{})
+
+	if _, err := h.ServeDNS(context.Background(), rec, r); err != nil {
+		t.Fatalf("ServeDNS: %v", err)
+	}
+	if rec.Msg.Rcode != dns.RcodeSuccess {
+		t.Fatalf("rcode = %s, want NOERROR", dns.RcodeToString[rec.Msg.Rcode])
+	}
+	if !rec.Msg.Authoritative {
+		t.Error("NS answer is not authoritative")
+	}
+
+	if len(rec.Msg.Answer) != 1 {
+		t.Fatalf("answer has %d records, want 1 NS (%v)", len(rec.Msg.Answer), rec.Msg.Answer)
+	}
+	ns, ok := rec.Msg.Answer[0].(*dns.NS)
+	if !ok {
+		t.Fatalf("answer is %T, want *dns.NS", rec.Msg.Answer[0])
+	}
+	if ns.Hdr.Name != testZone {
+		t.Errorf("NS owner = %s, want %s", ns.Hdr.Name, testZone)
+	}
+	if ns.Ns != testNSName {
+		t.Errorf("NS target = %s, want %s", ns.Ns, testNSName)
+	}
+
+	// Glue, so the client does not have to come back for the address.
+	if len(rec.Msg.Extra) != 1 {
+		t.Fatalf("additional section has %d records, want 1 A (%v)", len(rec.Msg.Extra), rec.Msg.Extra)
+	}
+	glue, ok := rec.Msg.Extra[0].(*dns.A)
+	if !ok {
+		t.Fatalf("additional record is %T, want *dns.A", rec.Msg.Extra[0])
+	}
+	if glue.Hdr.Name != testNSName || glue.A.String() != testSelf {
+		t.Errorf("glue = %s -> %s, want %s -> %s", glue.Hdr.Name, glue.A, testNSName, testSelf)
+	}
+}
+
+// The SOA names a nameserver; the NS RRset names a nameserver. If those two ever
+// disagree, a client that follows the MNAME and a client that follows the NS
+// end up at different places, and one of them is wrong.
+func TestSOAMNameMatchesNS(t *testing.T) {
+	h := loaded(testHandler(), "app.internal.example.com.")
+
+	soa, ok := h.soa(testZone, 1).(*dns.SOA)
+	if !ok {
+		t.Fatalf("soa() returned %T", h.soa(testZone, 1))
+	}
+	ns, ok := h.ns(testZone).(*dns.NS)
+	if !ok {
+		t.Fatalf("ns() returned %T", h.ns(testZone))
+	}
+	if soa.Ns != ns.Ns {
+		t.Errorf("SOA MNAME = %s, NS target = %s; they must be the same name", soa.Ns, ns.Ns)
+	}
+}
+
+// A router is free to claim any hostname, including this one. The zone's own
+// infrastructure has to win: pointing the NS at the Traefik listener would name
+// a host that does not answer DNS at all.
+func TestNameserverNameBeatsARouter(t *testing.T) {
+	h := loaded(testHandler(), testNSName)
+
+	r := new(dns.Msg)
+	r.SetQuestion(testNSName, dns.TypeA)
+	rec := dnstest.NewRecorder(&test.ResponseWriter{})
+
+	if _, err := h.ServeDNS(context.Background(), rec, r); err != nil {
+		t.Fatalf("ServeDNS: %v", err)
+	}
+	if len(rec.Msg.Answer) != 1 {
+		t.Fatalf("answer has %d records, want 1", len(rec.Msg.Answer))
+	}
+	if got := rec.Msg.Answer[0].(*dns.A).A.String(); got != testSelf {
+		t.Errorf("nameserver name resolved to %s, want %s (the server, not the target)", got, testSelf)
+	}
+}
+
+// With no address to publish, the NS RRset is still served - a zone without one
+// is malformed - but the name it points at answers NODATA rather than NXDOMAIN,
+// which is what an unreachable-but-existing nameserver looks like.
+func TestNameserverWithNoAddresses(t *testing.T) {
+	h := loaded(testHandler(), "app.internal.example.com.")
+	h.nsIPs = nil
+
+	for _, tc := range []struct {
+		qname     string
+		qtype     uint16
+		wantRcode int
+		wantCount int
+	}{
+		{testZone, dns.TypeNS, dns.RcodeSuccess, 1},
+		{testNSName, dns.TypeA, dns.RcodeSuccess, 0},
+	} {
+		r := new(dns.Msg)
+		r.SetQuestion(tc.qname, tc.qtype)
+		rec := dnstest.NewRecorder(&test.ResponseWriter{})
+
+		if _, err := h.ServeDNS(context.Background(), rec, r); err != nil {
+			t.Fatalf("ServeDNS: %v", err)
+		}
+		if rec.Msg.Rcode != tc.wantRcode {
+			t.Errorf("%s %s: rcode = %s, want %s", tc.qname, dns.TypeToString[tc.qtype],
+				dns.RcodeToString[rec.Msg.Rcode], dns.RcodeToString[tc.wantRcode])
+		}
+		if len(rec.Msg.Answer) != tc.wantCount {
+			t.Errorf("%s %s: answer has %d records, want %d", tc.qname, dns.TypeToString[tc.qtype],
+				len(rec.Msg.Answer), tc.wantCount)
+		}
+		if len(rec.Msg.Extra) != 0 {
+			t.Errorf("%s %s: additional section has %d records, want none",
+				tc.qname, dns.TypeToString[tc.qtype], len(rec.Msg.Extra))
+		}
+	}
+}
+
+func TestInterfaceIPv4s(t *testing.T) {
+	// Whatever this machine has, the contract holds: routable IPv4 only, and
+	// never loopback, which would name this server only to itself.
+	for _, ip := range interfaceIPv4s() {
+		if ip.To4() == nil {
+			t.Errorf("%s is not IPv4", ip)
+		}
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+			t.Errorf("%s is not an address a client can reach this server on", ip)
+		}
 	}
 }
 
