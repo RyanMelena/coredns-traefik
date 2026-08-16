@@ -82,7 +82,7 @@ jobs:
       # The Dockerfile cross-compiles from the build platform, so arm64 costs a
       # second Go build rather than an emulated toolchain.
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
