@@ -62,7 +62,7 @@ jobs:
       - name: Log in to GHCR
         # Skipped for pull requests: they must build, but they must not publish.
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
