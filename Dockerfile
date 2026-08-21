@@ -8,7 +8,7 @@
 # The stage runs on the build platform and cross-compiles to the target, so a
 # multi-arch build costs one Go build per architecture rather than a QEMU
 # emulated toolchain.
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 
 # Bumping this is the standing maintenance obligation for this repo; the plugin
 # tests are what tell you whether the plugin API moved under it.
