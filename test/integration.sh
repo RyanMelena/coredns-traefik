@@ -64,6 +64,15 @@ status_of() { # status_of <server> <name> [type]
   dig_in_net "$1" "$2" "${3:-A}" +noall +comments | sed -n 's/.*status: \([A-Z]*\).*/\1/p'
 }
 
+# Whether the response header carries a flag. Read from the flags line alone:
+# the rest of +comments includes the EDNS cookie, which is random hex and
+# matches a bare " aa" whenever it happens to start with those two digits.
+has_flag() { # has_flag <flag> <server> <name> [type]
+  local flags
+  flags=$(dig_in_net "$2" "$3" "${4:-A}" +noall +comments | sed -n 's/^;; flags: \([a-z ]*\);.*/\1/p')
+  contains " $1 " " $flags "
+}
+
 # write_routers [extra-json-object]
 write_routers() {
   docker exec -i "$STUB" sh -c 'mkdir -p /www/api/http && cat > /www/api/http/routers' <<EOF
@@ -126,7 +135,7 @@ check "known name resolves to the target" \
 check "answer carries the configured TTL" \
   "60" "$(dig_in_net "$DNS" "app.$ZONE" +noall +answer | awk '{print $2}')"
 check "answer is authoritative" \
-  "yes" "$(contains " aa" "$(dig_in_net "$DNS" "app.$ZONE" +noall +comments)")"
+  "yes" "$(has_flag aa "$DNS" "app.$ZONE")"
 check "both names from a multi-host rule resolve" \
   "$TARGET $TARGET" \
   "$(dig_in_net "$DNS" "wiki.$ZONE" +short) $(dig_in_net "$DNS" "docs.$ZONE" +short)"
@@ -202,7 +211,7 @@ echo "Cold start with the API unreachable"
 check "in-zone query is SERVFAIL, not NXDOMAIN" \
   "SERVFAIL" "$(status_of "$COLD" "app.$ZONE")"
 check "cold start does not answer authoritatively" \
-  "no" "$(contains " aa" "$(dig_in_net "$COLD" "app.$ZONE" +noall +comments)")"
+  "no" "$(has_flag aa "$COLD" "app.$ZONE")"
 
 echo
 echo "Discovery"
