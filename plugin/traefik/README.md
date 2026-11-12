@@ -73,8 +73,13 @@ lowercased and made fully qualified, deduplicated, and dropped unless they fall
 inside a zone of the server block. Names containing wildcards or regexp
 placeholders are not records and are ignored.
 
-Routers Traefik reports with a status other than `enabled` are skipped, so a
-router that failed to load does not resolve.
+Routers Traefik reports as `disabled` are skipped, so a router that failed to
+load does not resolve. Routers with status `warning` (a non-critical error, such
+as one of several entrypoints not existing) are still served by Traefik, so they
+do resolve.
+
+The routers endpoint is paginated (Traefik returns 100 routers per page by
+default); every page is read on each poll.
 
 ## Answers
 
