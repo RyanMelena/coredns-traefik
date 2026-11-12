@@ -2,11 +2,14 @@ package traefik
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -415,6 +418,8 @@ func TestRecordsFrom(t *testing.T) {
 		{Name: "app@docker", Rule: "Host(`app.internal.example.com`)", Status: "enabled"},
 		{Name: "web@docker", Rule: "Host(`web.internal.example.com`) && PathPrefix(`/`)", Status: "enabled"},
 		{Name: "broken@docker", Rule: "Host(`broken.internal.example.com`)", Status: "disabled"},
+		// Non-critical error: Traefik still serves it, so it must resolve.
+		{Name: "warn@docker", Rule: "Host(`warn.internal.example.com`)", Status: "warning"},
 		{Name: "public@docker", Rule: "Host(`www.example.com`)", Status: "enabled"},
 		{Name: "api@internal", Rule: "PathPrefix(`/api`)", Status: "enabled"},
 		{Name: "legacy@file", Rule: "Host(`legacy.internal.example.com`)"}, // no status reported
@@ -424,6 +429,7 @@ func TestRecordsFrom(t *testing.T) {
 		"app.internal.example.com.":    h.cfg.target,
 		"web.internal.example.com.":    h.cfg.target,
 		"legacy.internal.example.com.": h.cfg.target,
+		"warn.internal.example.com.":   h.cfg.target,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("recordsFrom()\n got: %v\nwant: %v", got, want)
@@ -482,6 +488,89 @@ func TestFetch(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// fakeTraefik serves n routers the way Traefik's API does: sorted by name,
+// paginated by page and per_page (default 100), and naming the next page in
+// X-Next-Page, which is "1" on the last page.
+func fakeTraefik(t *testing.T, n int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		perPage, page := 100, 1
+		if v := r.URL.Query().Get("per_page"); v != "" {
+			perPage, _ = strconv.Atoi(v)
+		}
+		if v := r.URL.Query().Get("page"); v != "" {
+			page, _ = strconv.Atoi(v)
+		}
+		if r.URL.Query().Get("keep") != "me" {
+			t.Errorf("query string from the configured URL was dropped: %q", r.URL.RawQuery)
+		}
+
+		start := min((page-1)*perPage, n)
+		end := min(start+perPage, n)
+		next := 1
+		if page*perPage < n {
+			next = page + 1
+		}
+		w.Header().Set("X-Next-Page", strconv.Itoa(next))
+
+		var b strings.Builder
+		b.WriteString("[")
+		for i := start; i < end; i++ {
+			if i > start {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(&b, `{"name":"r%05d@docker","rule":"Host(`+"`r%05d.internal.example.com`"+`)","status":"enabled"}`, i, i)
+		}
+		b.WriteString("]")
+		w.Write([]byte(b.String()))
+	}))
+}
+
+// The routers endpoint is paginated. Reading only the first page drops every
+// router past it, which is how a newly started container fails to appear.
+func TestFetchFollowsPages(t *testing.T) {
+	for _, n := range []int{0, 1, 150, perPage, perPage + 1, 2*perPage + 7} {
+		t.Run(strconv.Itoa(n), func(t *testing.T) {
+			srv := fakeTraefik(t, n)
+			defer srv.Close()
+
+			h := testHandler()
+			h.cfg.api = srv.URL + "/api/http/routers?keep=me"
+
+			got, err := h.fetch(context.Background())
+			if err != nil {
+				t.Fatalf("fetch: %v", err)
+			}
+			if len(got) != n {
+				t.Fatalf("got %d records, want %d", len(got), n)
+			}
+			if n > 0 {
+				last := fmt.Sprintf("r%05d.internal.example.com.", n-1)
+				if _, ok := got[last]; !ok {
+					t.Errorf("last router %s missing", last)
+				}
+			}
+		})
+	}
+}
+
+// An endpoint that always names a further page must not hang the poll.
+func TestFetchStopsOnRunawayPagination(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		w.Header().Set("X-Next-Page", strconv.Itoa(page+1))
+		w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	h := testHandler()
+	h.cfg.api = srv.URL
+
+	if _, err := h.fetch(context.Background()); err == nil {
+		t.Error("expected an error for runaway pagination, got none")
 	}
 }
 
